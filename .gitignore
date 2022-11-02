@@ -1,0 +1,4 @@
+dist/
+generate/
+.idea/
+.DS_Store
