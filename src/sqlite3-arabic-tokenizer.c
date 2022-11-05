@@ -281,7 +281,7 @@ static int fts5ArabicTokenizerTokenize(
 __declspec(dllexport)
 #endif
 
-int sqlite3_arabicftstokenizer_init(sqlite3 *db, char **error, const sqlite3_api_routines *api) {
+int sqlite3_sqlitearabictokenizer_init(sqlite3 *db, char **error, const sqlite3_api_routines *api) {
     fts5_api *ftsApi;
 
     fts5_tokenizer tokenizer = {fts5ArabicTokenizerCreate, fts5ArabicTokenizerDelete, fts5ArabicTokenizerTokenize};
