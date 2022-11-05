@@ -1,9 +1,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <sqlite3ext.h>
-
-#define MIN_TOKEN_LEN (3)
-#define MAX_TOKEN_LEN (64)
+#include <assert.h>
 
 SQLITE_EXTENSION_INIT1;
 #if defined(_WIN32)
@@ -16,6 +14,11 @@ typedef unsigned char utf8_t;
 struct TextInfo {
     char *modifiedText;
     int length;
+};
+
+struct WordInfo {
+    char **words;
+    int total;
 };
 
 
@@ -122,32 +125,13 @@ int utf8_decode(const char *str, int *i) {
 }
 
 struct TextInfo *remove_diacritic(const char *text, int length, int debug, int escaped_ascii) {
+    if (debug) printf("\nremove_diacritic START %s\n", text);
     struct TextInfo *info = (struct TextInfo *) sqlite3_malloc(sizeof(struct TextInfo *));
     int l;
     int turn = 0;
-    for (int i = 0; i < 2147483647 && text[i] != '\0';) {
-        if (!isunicode(text[i])) {
-            if (escaped_ascii == 1) {
-                info->modifiedText = (char *) text;
-                info->length = length;
-                return info;
-            } else {
-                i++;
-                turn++;
-            }
-
-        } else {
-            l = 0;
-            int z = utf8_decode(&text[i], &l);
-            if (debug) printf("Unicode value at %d %d is U+%04X and it\'s %d bytes.\n", z, i, z, l);
-            i += l;
-            turn += l;
-        }
-    }
-
-    char *replaced = (char *) sqlite3_malloc(turn);
+    char *replaced = (char *) sqlite3_malloc(length + 5);
     int j = 0;
-    for (int i = 0; i <= turn && text[i] != '\0';) {
+    for (int i = 0; i < length;) {
         if (!isunicode(text[i])) {
             *(replaced + j++) = text[i];
             i++;
@@ -181,19 +165,54 @@ struct TextInfo *remove_diacritic(const char *text, int length, int debug, int e
     if (debug) printf("\n\nLENGTH: %d\n\n", j);
     info->modifiedText = replaced;
     info->length = j;
+    if (debug) printf("\nremove_diacritic END %s\n", replaced);
     return info;
 }
 
 
-struct SnowTokenizer {
-    void *pCtx;
+struct WordInfo *splitInWordWithLength(const char *text, int length, int debug) {
 
-    fts5_tokenizer nextTokenizerModule;
-    Fts5Tokenizer *nextTokenizerInstance;
+    if (debug == 1) printf("\nsplitInWordWithLength %d\n", length);
+    int totalWords = 0;
+    int totalChar = 0;
+    for (; totalChar < length; totalChar++) {
+        if (text[totalChar] == ' ') {
+            totalWords += 1;
+        }
+    }
+    totalWords += 1;
+    totalChar = length;
 
-    int (*xToken)(void *, int, const char *, int, int, int);
-};
+    struct WordInfo *info = (struct WordInfo *) sqlite3_malloc(sizeof(struct WordInfo *));
+    char **words = sqlite3_malloc(totalWords * sizeof(char *));
+    int wordIndex = -1;
+    int i = 0;
+    int j = -1;
+    char *word = (char *) sqlite3_malloc(totalChar + 5);
+    for (; i < totalChar; i++) {
+        if (debug) printf("\n%c\n", text[i]);
+        if (text[i] == ' ') {
+            if (j >= 0) {
+                word[++j] = '\0';
+                words[++wordIndex] = word;
+                j = -1;
+                word = (char *) sqlite3_malloc(totalChar + 5);
+            }
+        } else {
+            word[++j] = text[i];
+        }
+    }
 
+    // for last word
+    if (j >= 0) {
+        word[++j] = '\0';
+        words[++wordIndex] = word;
+    }
+
+    info->words = words;
+    info->total = wordIndex + 1;
+    return info;
+}
 
 static fts5_api *fts5_api_from_db(sqlite3 *db) {
     fts5_api *pRet = 0;
@@ -218,84 +237,45 @@ static fts5_api *fts5_api_from_db(sqlite3 *db) {
     return pRet;
 }
 
-static void ftsSnowballDelete(Fts5Tokenizer *pTok) {
-    if (pTok) {
-        struct SnowTokenizer *p = (struct SnowTokenizer *) pTok;
+static int v = 0;
 
-        if (p->nextTokenizerInstance) {
-            p->nextTokenizerModule.xDelete(p->nextTokenizerInstance);
-        }
-
-        sqlite3_free(p);
-    }
+static int fts5ArabicTokenizerCreate(
+        void *pCtx,
+        const char **azArg,
+        int nArg,
+        Fts5Tokenizer **ppOut
+) {
+    *ppOut = (Fts5Tokenizer * ) & v;
+    return SQLITE_OK;
 }
 
-static int ftsSnowballCreate(void *pCtx, const char **azArg, int nArg, Fts5Tokenizer **ppOut) {
-    struct SnowTokenizer *result;
-    fts5_api *pApi = (fts5_api *) pCtx;
-    void *pUserdata = 0;
-    int rc = SQLITE_OK;
-    int nextArg;
-    const char *zBase = "unicode61";
-
-    result = (struct SnowTokenizer *) sqlite3_malloc(sizeof(struct SnowTokenizer));
-
-    if (result) {
-        memset(result, 0, sizeof(struct SnowTokenizer));
-        rc = SQLITE_OK;
-    } else {
-        rc = SQLITE_ERROR;
-    }
-
-    if (rc == SQLITE_OK) {
-        if (nArg > nextArg) {
-            zBase = azArg[nextArg];
-        }
-        rc = pApi->xFindTokenizer(pApi, zBase, &pUserdata, &result->nextTokenizerModule);
-    }
-
-    if (rc == SQLITE_OK) {
-        int nArg2 = (nArg > nextArg + 1 ? nArg - nextArg - 1 : 0);
-        const char **azArg2 = (nArg2 ? &azArg[nextArg + 1] : 0);
-        rc = result->nextTokenizerModule.xCreate(pUserdata, azArg2, nArg2, &result->nextTokenizerInstance);
-    }
-
-    if (rc != SQLITE_OK) {
-        ftsSnowballDelete((Fts5Tokenizer *) result);
-        result = NULL;
-    }
-
-    *ppOut = (Fts5Tokenizer *) result;
-    return rc;
+static void fts5ArabicTokenizerDelete(Fts5Tokenizer *p) {
+    assert(p == (Fts5Tokenizer * ) & v);
 }
 
-// biism rah r
-static int fts5SnowballCb(void *pCtx, int tflags, const char *pToken, int nToken, int iStart, int iEnd) {
-    struct SnowTokenizer *p = (struct SnowTokenizer *) pCtx;
+static int fts5ArabicTokenizerTokenize(
+        Fts5Tokenizer *pTokenizer,
+        void *pCtx,
+        int flags,
+        const char *pText, int nText,
+        int (*xToken)(void *, int, const char *, int, int, int)
+) {
 
-//    char *str = (char *) sqlite3_malloc(iEnd - iStart + 2);
-//    int len = iEnd - iStart;
-//    int i = 0;
-//    for (; i <= len; i++) {
-//        *(str + i) = *(pToken + iStart + i);
-//    }
+    struct WordInfo *wInfo = splitInWordWithLength(pText, nText, 0);
+    for (int i = 0; i < wInfo->total; i++) {
+        struct TextInfo *info = remove_diacritic(wInfo->words[i], 0, 0, 0);
+        int rc = xToken(pCtx, 0, info->modifiedText, info->length, 0,
+                        nText);
+        sqlite3_free(wInfo->words[i]);
+        if (rc) return rc;
+    }
 
-    printf("\n\nfts5SnowballCb BEFORE %s %d %d %d\n\n", pToken, nToken, iStart, iEnd);
-    struct TextInfo *info = remove_diacritic(pToken, nToken, 0, 0);
-    printf("\n\nfts5SnowballCb AFTER %s %d %d %d\n\n", info->modifiedText, info->length, iStart, iEnd);
-    return p->xToken(p->pCtx, 0, info->modifiedText, info->length, iStart, iEnd);
+    sqlite3_free(wInfo->words);
+    sqlite3_free(wInfo);
 
-
+    return SQLITE_OK;
 }
 
-static int ftsSnowballTokenize(Fts5Tokenizer *pTokenizer, void *pCtx, int flags, const char *pText, int nText,
-                               int (*xToken)(void *, int, const char *, int nToken, int iStart, int iEnd)) {
-    struct SnowTokenizer *p = (struct SnowTokenizer *) pTokenizer;
-    p->xToken = xToken;
-    p->pCtx = pCtx;
-    printf("\n\nftsSnowballTokenize %s %d\n\n", pText, nText);
-    return p->nextTokenizerModule.xTokenize(p->nextTokenizerInstance, (void *) p, flags, pText, nText, fts5SnowballCb);
-}
 
 #ifdef _WIN32
 __declspec(dllexport)
@@ -304,7 +284,7 @@ __declspec(dllexport)
 int sqlite3_arabicftstokenizer_init(sqlite3 *db, char **error, const sqlite3_api_routines *api) {
     fts5_api *ftsApi;
 
-    fts5_tokenizer tokenizer = {ftsSnowballCreate, ftsSnowballDelete, ftsSnowballTokenize};
+    fts5_tokenizer tokenizer = {fts5ArabicTokenizerCreate, fts5ArabicTokenizerDelete, fts5ArabicTokenizerTokenize};
 
     SQLITE_EXTENSION_INIT2(api);
 
@@ -318,96 +298,3 @@ int sqlite3_arabicftstokenizer_init(sqlite3 *db, char **error, const sqlite3_api
         return SQLITE_ERROR;
     }
 }
-
-// gcc -fPIC -dynamiclib arabic_fts5_tokenizer.c -o dist/x86/arabic_fts5_tokenizer.dylib -target x86_64-apple-macos10.12
-
-// gcc -fPIC -dynamiclib arabic_fts5_tokenizer.c -o dist/x86/arabic_fts5_tokenizer.dylib -target x86_64-apple-macos10.12
-
-// CREATE VIRTUAL TABLE hello USING fts5(text, tokenize='arabic_tokenizer');
-
-// .open /Users/snnafi/Downloads/quran.db // 1st
-
-//  select load_extension('/Users/snnafi/Desktop/CLionProjects/General/sqlite3-arabic-tokenizer/dist/x86/arabic_fts5_tokenizer');
-
-// INSERT INTO hello (text) VALUES('ثُمَّ أَنتُمْ هَٰٓؤُلَآءِ تَقْتُلُونَ أَنفُسَكُمْ وَتُخْرِجُونَ فَرِيقًا مِّنكُم مِّن دِيَٰرِهِمْ تَظَٰهَرُونَ عَلَيْهِم بِٱلْإِثْمِ وَٱلْعُدْوَٰنِ وَإِن يَأْتُوكُمْ أُسَٰرَىٰ تُفَٰدُوهُمْ وَهُوَ مُحَرَّمٌ عَلَيْكُمْ إِخْرَاجُهُمْۚ أَفَتُؤْمِنُونَ بِبَعْضِ ٱلْكِتَٰبِ وَتَكْفُرُونَ بِبَعْضٍۚ فَمَا جَزَآءُ مَن يَفْعَلُ ذَٰلِكَ مِنكُمْ إِلَّا خِزْىٌ فِى ٱلْحَيَوٰةِ ٱلدُّنْيَاۖ وَيَوْمَ ٱلْقِيَٰمَةِ يُرَدُّونَ إِلَىٰٓ أَشَدِّ ٱلْعَذَابِۗ وَمَا ٱللَّهُ بِغَٰفِلٍ عَمَّا تَعْمَلُون');
-
-// select * from verses  where text MATCH 'ثُمَّ';
-
-// select * from heyy1 where text MATCH 'ثم';
-
-// CREATE VIRTUAL TABLE IF NOT EXISTS heyy1 USING fts5 (sura,ayah,text,primary, tokenize='arabic_tokenizer');
-
-// insert into heyy1 values (1, 1, 'بِسْمِ ٱللَّهِ ٱلرَّحْمَٰنِ ٱلرَّحِيمِ ', NULL);
-
-// insert into heyy1 values (1, 1, 'i eat rice', NULL);
-// insert into heyy1 values (1, 1, 'ٱلْحَمْدُ لِلَّهِ رَبِّ ٱلْعَٰلَمِينَ ', NULL);
-// insert into heyy1 values (1, 1, 'jjjj', NULL);
-// select * from heyy1 where text MATCH 'ٱلر';
-// select * from heyy1 where text MATCH 'الر';
-// select * from heyy1 where text MATCH 'الحمد';
-
-
-// select * from heyy1 where text MATCH 'nafi';
-
-// select * from heyy1 where text MATCH 'بِسْمِ';
-// select * from heyy1 where text MATCH 'بس';
-
-// insert into heyy1 select * from verses;
-// select * from heyy1 where text MATCH 'يمر';
-
-//sqlite> insert into heyy1 values (1, 1, 'بِسْمِ ٱللَّهِ ٱلرَّحْمَٰنِ ٱلرَّحِيمِ ', NULL);
-//
-//
-//CHECK 1 0 1
-//
-//
-//
-//CHECK 1 0 1
-//
-//
-//
-//CHECK ب 0 2
-//
-//
-//
-//CHECK س 4 6
-//
-//
-//
-//CHECK م 8 10
-//
-//
-//
-//CHECK ٱلل 13 19
-//
-//
-//
-//CHECK هلل 23 25
-//
-//
-//
-//CHECK ٱلر 28 34
-//
-//
-//
-//CHECK حلر 38 40
-//
-//
-//
-//CHECK ملر 42 44
-//
-//
-//
-//CHECK نلر 48 50
-//
-//
-//
-//CHECK ٱلر 53 59
-//
-//
-//
-//CHECK حلر 63 65
-//
-//
-//
-//CHECK يمر 67 71
