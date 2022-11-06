@@ -129,9 +129,9 @@ struct TextInfo *remove_diacritic(const char *text, int length, int debug, int e
     struct TextInfo *info = (struct TextInfo *) sqlite3_malloc(sizeof(struct TextInfo *));
     int l;
     int turn = 0;
-    char *replaced = (char *) sqlite3_malloc(length + 5);
+    char *replaced = (char *) sqlite3_malloc(100);
     int j = 0;
-    for (int i = 0; i < length;) {
+    for (int i = 0; text[i] != '\0';) {
         if (!isunicode(text[i])) {
             *(replaced + j++) = text[i];
             i++;
