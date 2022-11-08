@@ -124,12 +124,16 @@ int utf8_decode(const char *str, int *i) {
     return u;
 }
 
-struct TextInfo *remove_diacritic(const char *text, int length, int debug, int escaped_ascii) {
+struct TextInfo *remove_diacritic(const char *text, int debug) {
     if (debug) printf("\nremove_diacritic START %s\n", text);
     struct TextInfo *info = (struct TextInfo *) sqlite3_malloc(sizeof(struct TextInfo *));
+
+    int total = 0;
+    for (; text[total] != '\0'; total++);
+    if (debug) printf("\nTOTAL LENGTH %d\n", total);
+
     int l;
-    int turn = 0;
-    char *replaced = (char *) sqlite3_malloc(100);
+    char *replaced = (char *) sqlite3_malloc(total + 5);
     int j = 0;
     for (int i = 0; text[i] != '\0';) {
         if (!isunicode(text[i])) {
@@ -158,9 +162,9 @@ struct TextInfo *remove_diacritic(const char *text, int length, int debug, int e
                     *(replaced + j++) = r3[1];
                 }
             }
-
         }
     }
+
     replaced[j] = '\0';
     if (debug) printf("\n\nLENGTH: %d\n\n", j);
     info->modifiedText = replaced;
@@ -263,7 +267,7 @@ static int fts5ArabicTokenizerTokenize(
 
     struct WordInfo *wInfo = splitInWordWithLength(pText, nText, 0);
     for (int i = 0; i < wInfo->total; i++) {
-        struct TextInfo *info = remove_diacritic(wInfo->words[i], 0, 0, 0);
+        struct TextInfo *info = remove_diacritic(wInfo->words[i], 0);
         int rc = xToken(pCtx, 0, info->modifiedText, info->length, 0,
                         nText);
         sqlite3_free(wInfo->words[i]);
