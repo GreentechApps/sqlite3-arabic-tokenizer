@@ -5,7 +5,7 @@ prepare-dist:
 	mkdir generate
 
 copy-file:
-	cp src/*.c generate
+	cp src/* generate
 
 download-sqlite:
 	curl -L https://www.sqlite.org/2022/sqlite-amalgamation-3390400.zip --output sqlite3.zip # change sql version if need
