@@ -1,7 +1,8 @@
 #include <stdio.h>
 #include <string.h>
-#include <sqlite3ext.h>
+#include "sqlite3ext.h"
 #include <assert.h>
+#include "sqlite3-arabic-tokenizer.h"
 
 SQLITE_EXTENSION_INIT1;
 #if defined(_WIN32)
